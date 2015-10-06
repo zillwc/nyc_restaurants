@@ -1,4 +1,18 @@
 <?php
+	/**
+	 * NYC Restaurant
+	 * Collects data from nycopendata and uses it to find the top 10 restaurants filtered by food type
+	 *
+	 * Logic: this script would act as a cronjob to download the csv file and process its data
+	 *	1. Download the csv
+	 *	2. Perform prerequisite checks on the file downloaded to make sure its safe to process
+	 *	3. Open file and process line by line, delimitting line by comma
+	 *	4. Make sure that the data we're inserting is not duplicate. This ensures that the script will run faster each time its run
+	 *	5. Compute the top 10 food variance based on foodtype
+	 *
+	 *	Author: Zill Christian
+	 *	Credit: socrata nycopendata
+	 */
 
 	// CSV file url
 	$csv_file_url = "https://nycopendata.socrata.com/api/views/xx67-kt59/rows.csv?accessType=DOWNLOAD";
@@ -26,7 +40,7 @@
 	);
 
 	// Cols required to process data line
-	$requiredCols = ['id', 'name', 'type', 'i_date', 'score', 'grade'];
+	$requiredCols = ['id', 'name', 'type', 'i_date', 'score'];
 
 	// Download file
 	$filename = downloadCSVFile($csv_file_url);
@@ -380,10 +394,6 @@
 		if (!is_numeric($data[$headers['score']]))
 			return true;
 
-		// Make sure grade is in bounds
-		if (!in_array(strtolower($data[$headers['grade']]), array('a', 'b', 'c', 'p', 'z')))
-			return true;
-
 		return false;
 	}
 
@@ -417,10 +427,9 @@
 		// generate filename
 		$file_path = getcwd() . "/csvfiles/" . uniqid() . ".csv";
 
-		echo "Downloading file to $file_path\n";
 		// download the file in a stream
 		file_put_contents($file_path, fopen($url, 'r'));
-		echo "Done downloading file\n";
+
 		// ensure the file actually got downloaded
 		if (!file_exists($file_path))
 			throw new Exception("CSV file could not be downloaded to " . $file_path);

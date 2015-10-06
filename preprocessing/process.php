@@ -29,8 +29,7 @@
 	$requiredCols = ['id', 'name', 'type', 'i_date', 'score', 'grade'];
 
 	// Download file
-	//$filename = downloadCSVFile($csv_file_url);
-	$filename = "/Users/Zillwc/Documents/Github/NYC_Restaurants/preprocessing/csvfiles/561303832ef41.csv";
+	$filename = downloadCSVFile($csv_file_url);
 
 	// Collect the env from arguments if it's set, otherwise default to local
 	$env = !empty($argv[1]) && in_array(strtolower($argv[1]), ['prod', 'stg', 'local']) ? $argv[1] : 'local';
@@ -75,9 +74,43 @@
 		    }
 		    fclose($fh);
 		}
+
+		// Let's finally get to that thai food
+		computeThaiFoodVariance('thai', $dbh);
 	}
 
 
+	/**
+	 * Generates the top 10 records to insert into top_10_restaurants table for faster app access
+	 * @param $dbh [Object] mysqli database handler
+	 */
+	function computeFoodVariance($foodType, $dbh) {
+		$camis = array();
+
+		$query = "SELECT * FROM inspection i LEFT JOIN restaurant_to_inspection rti ON rti.inspection_id=i.id LEFT JOIN restaurant r ON r.id=rti.restaurant_id WHERE r.camis IN (SELECT r.camis FROM restaurant r LEFT JOIN cuisine_type c ON r.cuisine_type_id=c.id WHERE c.type='".$foodType."') ORDER BY i.inspection_date DESC, score, grade LIMIT 10";
+
+		if ($result = $dbh->query($query))
+			while ($row = $result->fetch_assoc())
+				$camis[] = $row['id'];
+
+		foreach ($camis as $rest_id) {
+			$stmt = $dbh->prepare("INSERT INTO top_10_restaurants(restaurant_id, insert_timestamp) VALUES (?, now())");
+	        $stmt->bind_param('i', $rest_id);
+	        
+	        if (!$stmt->execute()) {
+	            echo "top_10_restaurants insert failed: (" . $stmt->errno . ") " . $stmt->error;
+	            exit();
+	        }
+		}
+	}
+
+
+	/**
+	 * Function inserts data into the database
+	 * @param $data [array] array containing data from one row from csv
+	 * @param $headers [array] dictionary translating the headers to row indexes
+	 * @param $dbh [Object] mysqli database handler
+	 */
 	function insertIntoDatabase($data, $headers, $dbh) {
 		$camis		= $data[$headers['id']];
 		$name		= $data[$headers['name']];
@@ -113,10 +146,17 @@
 			$violationID = getViolationID($code, $desc, $flag, $dbh);
 			$inspectionID = createInspection($i_date, $violationID, $i_type, $score, $grade, $dbh);
 
+			// Connect both records
 			tieRestaurantToInspection($rest_id, $inspectionID, $dbh);
 		}
 	}
 
+	/**
+	 * Connects unique Restaurants to multiple Inspections
+	 * @param $rest_id [int] unique restaurant record id
+	 * @param $inspectionID [int] primary id of inspection id
+	 * @param $dbh [Object] mysqli database handler
+	 */
 	function tieRestaurantToInspection($rest_id, $inspectionID, $dbh) {
 		$stmt = $dbh->prepare("INSERT INTO restaurant_to_inspection(restaurant_id, inspection_id) VALUES(?, ?)");
         $stmt->bind_param('ii', $rest_id, $inspectionID);
@@ -127,6 +167,12 @@
         }
 	}
 
+	/**
+	 * Returns restaurant id
+	 * @param $camis [String] unique identifier for restaurant
+	 * @param $dbh [Object] mysqli database handler
+	 * @return [int] id of the restaurant record
+	 */
 	function getRestaurantID($camis, $dbh) {
 		$rest_id = 0;
 
@@ -138,6 +184,14 @@
 		return $rest_id;
 	}
 
+	/**
+	 * Returns violation id if it exists, otherwise it creates it and then returns the new id
+	 * @param $code [String] violation code
+	 * @param $desc [String] violation description
+	 * @param $flag [String] a string that gets converted to a boolean
+	 * @param $dbh [Object] mysqli database handler
+	 * @return [int] returns the violation id
+	 */
 	function getViolationID($code, $desc, $flag, $dbh) {
 		$violationID = null;
 
@@ -165,6 +219,15 @@
         return $stmt->insert_id;
 	}
 
+	/**
+	 * Creates an inspection record if it doesn't exist
+	 * @param $i_date [String] inspection date
+	 * @param $violationID [int] primary id of the violation record
+	 * @param $i_type [String] inspection type
+	 * @param $score [int] depicts health score
+	 * @param $grade [String] the health grade
+	 * @param $dbh [Object] mysqli database handler
+	 */
 	function createInspection($i_date, $violationID, $i_type, $score, $grade, $dbh) {
 		$stmt = $dbh->prepare("INSERT INTO inspection(inspection_date, violation_id, type, score, grade) VALUES(STR_TO_DATE(?, '%m/%d/%Y'), ?, ?, ?, ?)");
         $stmt->bind_param('sisis', $i_date, $violationID, $i_type, $score, $grade);
@@ -177,6 +240,15 @@
         return $stmt->insert_id;
 	}	
 
+	/**
+	 * Function returns a boolean depending on whether the inspection exists or not
+	 * @param $i_date [String] inspection date
+	 * @param $i_type [String] inspection type
+	 * @param $score [int] depicts health score
+	 * @param $grade [String] the health grade
+	 * @param $dbh [Object] mysqli database handler
+	 * @return [bool] returns a boolean depending on whether the inspection exists or not
+	 */
 	function inspectionExists($i_date, $i_type, $score, $grade, $dbh) {
 		$inspections = array();
 

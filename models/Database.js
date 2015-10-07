@@ -11,7 +11,7 @@ defaults = {
     'local': {
         'host': 'localhost',
         'user': 'root',
-        'password': 'root',
+        'password': '',
         'database': 'nyc_restaurants'
     },
     'stg': {

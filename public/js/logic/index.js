@@ -49,20 +49,21 @@ function loadTop10(foodType) {
         success: function(resp, text, xhr) {
         	if (resp.status) {
         		if (!resp.data || resp.data.length == 0) {
-					showWarning("No restaurants cached");
+					alert("No restaurants cached");
 					return false;
 				}
 
 				rows = resp.data;
 				var rowsHtml = "";
 	            var counter = 1;
-
+                "https://www.google.com/maps/place/"
 	            for (var i in rows) {
 	                rowHtml = '<tr> ' +
-	                    '<td>'+rows[i].Score+'</td>' +
-	                    '<td>'+rows[i].Grade+'</td>' +
-	                    '<td>'+rows[i].Restaurant+'</td>' +
-	                    '<td>'+rows[i].Address+'</td>' +
+	                    '<td>'+rows[i].score+'</td>' +
+	                    '<td>'+rows[i].grade+'</td>' +
+	                    '<td>'+rows[i].restaurant+'</td>' +
+	                    '<td><a href="https://www.google.com/maps/place/'+rows[i].address.split(' ').join('+')+'">'+rows[i].address+'</a></td>' +
+                        '<td>'+rows[i].phone+'</td>' +
 	                '</tr>';
 	                counter++;
 	                rowsHtml += rowHtml;
@@ -71,7 +72,6 @@ function loadTop10(foodType) {
             	$('#top10body').append(rowsHtml);
         	} else {
 				console.error(resp);
-				showError(resp.message);
 			}
         },
         error: function(xhr, err) {

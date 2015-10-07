@@ -26,6 +26,9 @@
 	 *	Credit: socrata nycopendata
 	 */
 
+	// Setting default timezone
+	date_default_timezone_set('America/New_York');
+
 	// CSV file url
 	$csv_file_url = "https://nycopendata.socrata.com/api/views/xx67-kt59/rows.csv?accessType=DOWNLOAD";
 
@@ -59,9 +62,15 @@
 
 	// Collect the env from arguments if it's set, otherwise default to local
 	$env = !empty($argv[1]) && in_array(strtolower($argv[1]), ['prod', 'stg', 'local']) ? $argv[1] : 'local';
+
+	// Collect a database handle
+	$dbh = getDBHandle($env);
 	
 	// Initiate the process
-	processCSV($filename, $env, $headers, $requiredCols);
+	processCSV($filename, $env, $headers, $requiredCols, $dbh);
+
+	// Let's finally get to that thai food
+	computeFoodVariance('thai', $dbh);
 
 
 	/**
@@ -70,13 +79,12 @@
 	 * @param $env [String] environment to apply data to
 	 * @param $headers [Object] Dictionary containing the row headers/location
 	 * @param $requiredCols [Array] Contains the list of rows that are needed for processing
+	 * @param $dbh [Object] mysqli database handler
 	 */
-	function processCSV($file, $env, $headers, $requiredCols) {
+	function processCSV($file, $env, $headers, $requiredCols, $dbh) {
 		if (!preReqChecks($file))
 			exit();
 
-		// Collect a database handle
-		$dbh = getDBHandle($env);
 		$index = 0;
 
 		if ($fh = fopen($file, "r")) {
@@ -99,34 +107,6 @@
 				$index += 1;
 		    }
 		    fclose($fh);
-		}
-
-		// Let's finally get to that thai food
-		computeThaiFoodVariance('thai', $dbh);
-	}
-
-
-	/**
-	 * Generates the top 10 records to insert into top_10_restaurants table for faster app access
-	 * @param $dbh [Object] mysqli database handler
-	 */
-	function computeFoodVariance($foodType, $dbh) {
-		$camis = array();
-
-		$query = "SELECT * FROM inspection i LEFT JOIN restaurant_to_inspection rti ON rti.inspection_id=i.id LEFT JOIN restaurant r ON r.id=rti.restaurant_id WHERE r.camis IN (SELECT r.camis FROM restaurant r LEFT JOIN cuisine_type c ON r.cuisine_type_id=c.id WHERE c.type='".$foodType."') ORDER BY i.inspection_date DESC, score, grade LIMIT 10";
-
-		if ($result = $dbh->query($query))
-			while ($row = $result->fetch_assoc())
-				$camis[] = $row['id'];
-
-		foreach ($camis as $rest_id) {
-			$stmt = $dbh->prepare("INSERT INTO top_10_restaurants(restaurant_id, insert_timestamp) VALUES (?, now())");
-	        $stmt->bind_param('i', $rest_id);
-	        
-	        if (!$stmt->execute()) {
-	            echo "top_10_restaurants insert failed: (" . $stmt->errno . ") " . $stmt->error;
-	            exit();
-	        }
 		}
 	}
 
@@ -279,7 +259,7 @@
 		$inspections = array();
 
 		// Checking if it exists already
-		if ($result = $dbh->query("SELECT * FROM inspection WHERE type = '".$i_type."' AND inspection_date = '".$i_date."' AND grade = '".$grade."' "))
+		if ($result = $dbh->query("SELECT * FROM inspection WHERE type = '".$i_type."' AND inspection_date = STR_TO_DATE('".$i_date."', '%m/%d/%Y') AND grade = '".$grade."' "))
 			while ($row = $result->fetch_assoc())
 				$inspections[] = $row;
 
@@ -387,6 +367,74 @@
 				$camisArr[$row['camis']] = $row;
 
 		return $camisArr;
+	}
+
+	/**
+	 * Generates the top 10 records to insert into top_10_restaurants table for faster app access
+	 * @param $dbh [Object] mysqli database handler
+	 */
+	function computeFoodVariance($foodType, $dbh) {
+		/* 
+			We can allow the top_10_restaurants table to maintain performance by trimming excess rows
+			The cost of this is historical data. If you want to preserve historical data, set below to false
+		*/
+		$maintainPerformance = true;
+		$limit = 10;
+        $restaurants = array();
+
+		$query = "SELECT * FROM restaurant r LEFT JOIN cuisine_type c ON c.id=r.`cuisine_type_id` LEFT JOIN address a ON a.id=r.`address_id` LEFT JOIN restaurant_to_inspection ri ON ri.`restaurant_id`=r.`id` LEFT JOIN inspection i ON i.`id`=ri.`inspection_id` WHERE c.`type`='thai' AND i.inspection_date > DATE_SUB(CURDATE(), INTERVAL 1 YEAR) AND grade IN ('A', 'B') ORDER BY score DESC";
+
+		if ($result = $dbh->query($query)) {
+			while ($row = $result->fetch_assoc()) {
+				$camis = $row['camis'];
+				// First one should already be sorted and highest score within last year so we choose this
+				if (empty($restaurants[$camis]))
+					$restaurants[$camis] = $row;
+			}
+		}
+
+		$index = 0;
+		// For each restaurant collected, insert into the top_10_restaurants table for faster access
+		foreach ($restaurants as $camis => $row) {
+			// only insert as much as we need
+			if ($index == $limit)
+				break;
+
+			$name = trim($row['name']);
+			$address = trim($row['building']) . ' ' . trim($row['street']) . ', ' . trim($row['boro']) . ' ' . trim($row['zip']);
+			$phone = trim($row['phone']);
+			$score = $row['score'];
+			$grade = trim($row['grade']);
+
+			$stmt = $dbh->prepare("INSERT INTO top_10_restaurants (restaurant, address, phone, score, grade) VALUES(?, ?, ?, ?, ?)");
+	        $stmt->bind_param('sssis', $name, $address, $phone, $score, $grade);
+	        
+	        if (!$stmt->execute()) {
+	            echo "top_10_restaurants row insert failed: (" . $stmt->errno . ") " . $stmt->error;
+	            exit();
+	        }
+
+	        $index++;
+		}
+
+        if ($maintainPerformance) {
+	        // Lets set a nice limit to this table so it can maintain its performance
+	        $currCount = 0;
+	        $query = "SELECT COUNT(*) AS CurrCount FROM top_10_restaurants";
+			if ($result = $dbh->query($query))
+				while ($row = $result->fetch_assoc())
+					$currCount = $row['CurrCount'];
+
+			// If table if 5x it's limit size, we trim rows by half (performance reason)
+			if ($currCount > ($limit*5)) {
+				$numToDelete = $currCount / 2;
+				$stmt = $dbh->prepare("DELETE FROM top_10_restaurants ORDER BY insert_timestamp LIMIT ?");
+				$stmt->bind_param('i', $numToDelete);
+
+				if (!$stmt->execute())
+					echo "Could not delete from top_10_restaurants: (" . $stmt->errno . ") " . $stmt->error;
+			}
+		}
 	}
 
 	/**
